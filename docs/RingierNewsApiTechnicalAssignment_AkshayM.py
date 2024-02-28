@@ -6,12 +6,23 @@ import textblob
 from textblob import TextBlob
 
 
+import pandas as pd
+import mysql.connector
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.decomposition import LatentDirichletAllocation
+from sqlalchemy import create_engine
+from nltk.corpus import stopwords
+import nltk
+nltk.download('stopwords')
+
+#Fetch function preventing pull of data due to InsecureRequest
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Example usage:
+# Input Values
 api_key = '7538bd8775004d5bb5166f5574cd9abd'
 
-# MySQL connection configuration
+# MySQL Connection Config
 host_name = "localhost"
 user_name = "root"
 user_password = "12345"
@@ -24,15 +35,16 @@ def fetch_news(api_key, country='eu', from_date='2024-02-10', to_date='2024-02-2
         response = requests.get(url)
         response.raise_for_status()  # Raise an exception for HTTP errors
         data = response.json()
-        if data.get('status') == 'ok':
+        if data.get('status') == 'ok': #If WebApp responsive proceed
             return data['articles']
         else:
             print(f'Failed to fetch news articles: {data.get("message")}')
             return []
-    except requests.exceptions.RequestException as e:
+    except requests.exceptions.RequestException as e: #Catch RequestException and return error
         print(f'Error fetching news articles: {e}')
         return []
 
+#define function used to create a connection to instantiated MySQl DB
 def create_connection(host_name, user_name, user_password, db_name):
     connection = None
     try:
@@ -48,6 +60,7 @@ def create_connection(host_name, user_name, user_password, db_name):
 
     return connection
 
+#Define function to execute queries with optional "Value" parameter
 def execute_query(connection, query, values=None):
     cursor = connection.cursor()
     try:
@@ -60,25 +73,21 @@ def execute_query(connection, query, values=None):
     except Error as e:
         print(f"The error '{e}' occurred")
 
-
+#Perform NewsAPI Extraction
 articles = fetch_news(api_key)
 
 
-
+#Instantiate a Connection
 connection = create_connection(host_name, user_name, user_password, db_name)
 
 # Drop table if already created
-drop_table_query = """
-DROP TABLE IF EXISTS news_articles
-"""
-execute_query(connection, drop_table_query)
-
 drop_table_query = """
 DROP TABLE IF EXISTS raw_data
 """
 execute_query(connection, drop_table_query)
 
-# Create table to store articles if not exists
+
+# Create raw_data table to store articles if not exists
 create_table_query = """
 CREATE TABLE IF NOT EXISTS raw_data (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -90,6 +99,7 @@ CREATE TABLE IF NOT EXISTS raw_data (
     published_at VARCHAR(255)
 )
 """
+#Execute Query Call to Create raw_data table
 execute_query(connection, create_table_query)
 
 # Insert articles into the table
@@ -110,13 +120,8 @@ for article in articles:
     execute_query(connection, insert_query, values)
 
 
-# Print the articles
-if articles:
-    for article in articles:
-        print(article)
-
-
-
+#Define function to create processed_data table which
+#outputs raw_data that has undergone transformation / filtering to cleanse data
 
 def process_data(connection):
     # Drop table if already created
@@ -150,6 +155,7 @@ def process_data(connection):
 
 process_data(connection)
 
+#Define function to catch all invalid data used for reporting purposes
 def invalid_data(connection):
     # Drop table if already created
     drop_table_query = """
@@ -184,53 +190,42 @@ def invalid_data(connection):
 
 invalid_data(connection)
 
-def sentiment_analysis(connection):
-    # Create analyze_data table with the same structure as processed_data
-    create_analyze_table_query = """
-    CREATE TABLE IF NOT EXISTS analyze_data (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        source VARCHAR(255),
-        author VARCHAR(255),
-        title TEXT,
-        description TEXT,
-        url VARCHAR(255),
-        published_at VARCHAR(255),
-        sentiment_value FLOAT,
-        sentiment_text VARCHAR(20)
-    )
+# Create an SQLAlchemy engine using the MySQL connector connection
+engine = create_engine('mysql+mysqlconnector://root:12345@localhost/testDB')
+
+# Fetch the processed_data from the processed_data table
+query = "SELECT * FROM processed_data"
+processed_data = pd.read_sql(query, engine)
+
+
+# Sentiment analysis
+analyzer = SentimentIntensityAnalyzer()
+processed_data['sentiment_score'] = processed_data['description'].apply(lambda x: analyzer.polarity_scores(x)['compound'])
+processed_data['sentiment_text'] = processed_data['sentiment_score'].apply(lambda x: 'positive' if x > 0 else ('negative' if x < 0 else 'neutral'))
+
+# Topic modeling
+# Tokenize the text and remove stopwords
+stop_words = list(stopwords.words('english'))
+vectorizer = CountVectorizer(stop_words=stop_words)
+X = vectorizer.fit_transform(processed_data['description'])
+
+# Train the LDA model
+lda_model = LatentDirichletAllocation(n_components=5, random_state=42)
+lda_model.fit(X)
+
+# Assign topics to each document
+topics_covered = lda_model.transform(X).argmax(axis=1)
+processed_data['topics_covered'] = topics_covered
+
+# Drop table if already created
+drop_table_query = """
+    DROP TABLE IF EXISTS invalid_data
     """
-    execute_query(connection, create_analyze_table_query)
+execute_query(connection, drop_table_query)
 
-    # Retrieve data from processed_data table
-    select_processed_query = """
-    SELECT id, source, author, title, description, url, published_at
-    FROM processed_data
-    """
-    cursor = connection.cursor(dictionary=True)
-    cursor.execute(select_processed_query)
-    processed_data = cursor.fetchall()
+processed_data.to_sql('analyze_data', engine, if_exists='replace', index=False)
 
-    # Perform sentiment analysis and insert data into analyze_data table
-    insert_analyze_query = """
-    INSERT INTO analyze_data (source, author, title, description, url, published_at, sentiment_value, sentiment_text)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-    """
-    for row in processed_data:
-        description = row['description']
-        sentiment_score = TextBlob(description).sentiment.polarity * 100
-        if sentiment_score > 0:
-            sentiment_text = 'positive'
-        elif sentiment_score < 0:
-            sentiment_text = 'negative'
-        else:
-            sentiment_text = 'neutral'
-        values = (row['source'], row['author'], row['title'], row['description'], row['url'], row['published_at'], sentiment_score, sentiment_text)
-        execute_query(connection, insert_analyze_query, values)
-
-
-
-sentiment_analysis(connection)
-
+engine.dispose()
 # Close the connection
 if connection:
     connection.close()
