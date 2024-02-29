@@ -220,7 +220,7 @@ execute_query(connection, drop_table_query)
 processed_data.to_sql('analyze_data', engine, if_exists='replace', index=False)
 
 engine.dispose()
-# Close the connection
+# Close the Connection
 if connection:
     connection.close()
 
