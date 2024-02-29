@@ -1,0 +1,4 @@
+(⌐■_■)-> Instructions
+
+1. Import utilized python modules
+2. run docker - compose yaml file to instantiate similar Container and Database to run file
