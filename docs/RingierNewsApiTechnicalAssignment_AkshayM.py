@@ -2,10 +2,6 @@ import requests
 import urllib3
 import mysql.connector
 from mysql.connector import Error
-import textblob
-from textblob import TextBlob
-
-
 import pandas as pd
 import mysql.connector
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -16,9 +12,6 @@ from nltk.corpus import stopwords
 import nltk
 nltk.download('stopwords')
 
-#Fetch function preventing pull of data due to InsecureRequest
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 # Input Values
 api_key = '7538bd8775004d5bb5166f5574cd9abd'
 
@@ -28,8 +21,9 @@ user_name = "root"
 user_password = "12345"
 db_name = "testDB"
 
-
-def fetch_news(api_key, country='eu', from_date='2024-02-10', to_date='2024-02-27'):
+#InsecureRequest preventing pull of data in fetch_news()
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+def fetch_news(api_key, country='eu', from_date='2024-02-22', to_date='2024-02-29'):
     url = f'https://newsapi.org/v2/everything?q=Europe&from={from_date}&to={to_date}&apiKey={api_key}'
     try:
         response = requests.get(url)
@@ -80,7 +74,7 @@ articles = fetch_news(api_key)
 #Instantiate a Connection
 connection = create_connection(host_name, user_name, user_password, db_name)
 
-# Drop table if already created
+# Drop table raw_data if already created
 drop_table_query = """
 DROP TABLE IF EXISTS raw_data
 """
@@ -102,7 +96,7 @@ CREATE TABLE IF NOT EXISTS raw_data (
 #Execute Query Call to Create raw_data table
 execute_query(connection, create_table_query)
 
-# Insert articles into the table
+# Insert articles into the raw table
 for article in articles:
     source = article['source']['name']
     author = article['author']
@@ -121,7 +115,7 @@ for article in articles:
 
 
 #Define function to create processed_data table which
-#outputs raw_data that has undergone transformation / filtering to cleanse data
+#outputs raw_data that has undergone remedial transformation / filtering to cleanse data
 
 def process_data(connection):
     # Drop table if already created
@@ -173,7 +167,7 @@ def invalid_data(connection):
         url VARCHAR(255),
         published_at VARCHAR(255)
     )
-    """
+"""
     execute_query(connection, create_table_query)
 
 
@@ -183,7 +177,7 @@ def invalid_data(connection):
         INSERT INTO invalid_data (source, author, title, description, url, published_at)
         SELECT source, author, title, description, url, published_at
         FROM raw_data
-        WHERE id NOT IN (SELECT id FROM processed_data)
+        WHERE title NOT IN (SELECT title FROM processed_data)
         """
     execute_query(connection, insert_invalid_query)
 
@@ -210,7 +204,7 @@ vectorizer = CountVectorizer(stop_words=stop_words)
 X = vectorizer.fit_transform(processed_data['description'])
 
 # Train the LDA model
-lda_model = LatentDirichletAllocation(n_components=5, random_state=42)
+lda_model = LatentDirichletAllocation(n_components=8, random_state=42)
 lda_model.fit(X)
 
 # Assign topics to each document
@@ -219,7 +213,7 @@ processed_data['topics_covered'] = topics_covered
 
 # Drop table if already created
 drop_table_query = """
-    DROP TABLE IF EXISTS invalid_data
+    DROP TABLE IF EXISTS analyze_data
     """
 execute_query(connection, drop_table_query)
 
@@ -229,3 +223,4 @@ engine.dispose()
 # Close the connection
 if connection:
     connection.close()
+
